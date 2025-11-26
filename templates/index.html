@@ -158,7 +158,6 @@
         .results-grid {
             display: none;
             grid-template-columns: 1.2fr 0.8fr;
-            /* More space for image */
             gap: 40px;
             margin-top: 40px;
             animation: fadeIn 0.6s ease-out;
@@ -185,61 +184,97 @@
             flex-direction: column;
         }
 
-        /* --- Image Viewport --- */
+        /* --- Image Viewport (Updated for Stacking) --- */
         .img-viewport {
             width: 100%;
             height: 500px;
-            /* Taller */
             background: #000;
             border-radius: 16px;
             overflow: hidden;
             position: relative;
+            /* Crucial for absolute stacking */
             margin-bottom: 15px;
             box-shadow: 0 10px 30px rgba(0, 0, 0, 0.2);
             cursor: grab;
+            border: 4px solid #fff;
             display: flex;
             align-items: center;
             justify-content: center;
-            border: 4px solid #fff;
         }
 
         .img-viewport:active {
             cursor: grabbing;
         }
 
-        .preview-img {
+        .layer-stack {
+            position: relative;
+            width: 100%;
+            height: 100%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transform-origin: center center;
+        }
+
+        .layer-img {
+            position: absolute;
             max-width: 100%;
             max-height: 100%;
-            transition: transform 0.1s ease-out;
             pointer-events: none;
+            transition: opacity 0.2s ease;
         }
 
-        /* --- Controls --- */
-        .controls-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            margin-bottom: 15px;
-            background: #f1f5f9;
-            padding: 10px;
-            border-radius: 12px;
-        }
-
-        .toggle-btn {
-            background: transparent;
-            color: var(--text-light);
-            padding: 8px 16px;
-            border-radius: 8px;
-            border: none;
-            cursor: pointer;
-            font-weight: 600;
-            transition: all 0.2s;
-        }
-
-        .toggle-btn.active {
+        /* --- Layer Controls (New) --- */
+        .layer-controls {
             background: #fff;
-            color: #764ba2;
-            box-shadow: 0 2px 5px rgba(0, 0, 0, 0.1);
+            border: 1px solid #e2e8f0;
+            border-radius: 12px;
+            padding: 15px;
+            margin-bottom: 15px;
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 15px;
+        }
+
+        .control-group {
+            display: flex;
+            flex-direction: column;
+            gap: 5px;
+        }
+
+        .control-label {
+            font-size: 0.8rem;
+            font-weight: 700;
+            color: var(--text-light);
+            text-transform: uppercase;
+        }
+
+        /* Modern Toggle Switch */
+        .switch-row {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: #f7fafc;
+            padding: 8px 12px;
+            border-radius: 8px;
+            margin-bottom: 5px;
+        }
+
+        .switch-row span {
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        input[type="range"] {
+            width: 100%;
+            accent-color: #764ba2;
+        }
+
+        /* --- Zoom Controls --- */
+        .zoom-controls {
+            display: flex;
+            justify-content: flex-end;
+            margin-bottom: 10px;
         }
 
         .zoom-controls button {
@@ -354,7 +389,7 @@
     <div class="container">
         <div class="header">
             <h1>🧠 NeuroVision AI</h1>
-            <p>Deep Learning Tumor Analysis & Segmentation System</p>
+            <p>Deep Learning Tumor Analysis & Explainability (Grad-CAM)</p>
         </div>
 
         <div class="card">
@@ -373,21 +408,41 @@
             <div class="results-grid" id="resultsArea">
 
                 <div class="image-col">
-                    <div class="controls-row">
-                        <div class="view-toggles">
-                            <button class="toggle-btn active" onclick="showOriginal()">Original</button>
-                            <button class="toggle-btn" onclick="showSegmented()" id="segBtn">Segmentation</button>
+                    <div class="layer-controls">
+                        <div class="control-group">
+                            <span class="control-label">Segmentation Mask</span>
+                            <div class="switch-row">
+                                <span>Show Mask</span>
+                                <input type="checkbox" id="toggleSeg" checked onchange="updateLayers()">
+                            </div>
+                            <input type="range" id="opacitySeg" min="0" max="1" step="0.1" value="0.6"
+                                oninput="updateLayers()">
                         </div>
-                        <div class="zoom-controls">
-                            <button onclick="rotateImage()" title="Rotate 90° Clockwise">↻</button>
-                            <button onclick="adjustZoom(-0.2)">−</button>
-                            <button onclick="resetZoom()">R</button>
-                            <button onclick="adjustZoom(0.2)">+</button>
+
+                        <div class="control-group">
+                            <span class="control-label">Explainability (Grad-CAM)</span>
+                            <div class="switch-row">
+                                <span>Show Heatmap</span>
+                                <input type="checkbox" id="toggleCam" onchange="updateLayers()">
+                            </div>
+                            <input type="range" id="opacityCam" min="0" max="1" step="0.1" value="0.5"
+                                oninput="updateLayers()">
                         </div>
                     </div>
 
+                    <div class="zoom-controls">
+                        <button onclick="rotateImage()" title="Rotate 90° Clockwise">↻</button>
+                        <button onclick="adjustZoom(-0.2)">−</button>
+                        <button onclick="resetZoom()">R</button>
+                        <button onclick="adjustZoom(0.2)">+</button>
+                    </div>
+
                     <div class="img-viewport" id="imgViewport">
-                        <img id="mainImage" class="preview-img" src="" alt="MRI Scan">
+                        <div class="layer-stack" id="layerStack">
+                            <img id="layerBase" class="layer-img" src="" style="z-index: 1;">
+                            <img id="layerCam" class="layer-img" src="" style="z-index: 2; opacity: 0;">
+                            <img id="layerSeg" class="layer-img" src="" style="z-index: 3; opacity: 0;">
+                        </div>
                     </div>
 
                     <p style="font-size: 0.85rem; color: #676768; margin-top: 10px; text-align: center;">
@@ -437,8 +492,8 @@
     </div>
 
     <script>
-        let originalImgData = "";
-        let segmentedImgData = "";
+        let segmentedImgData = null;
+        let heatmapImgData = null;
         let currentFile = null;
         let currentFileName = "scan";
         let currentRotation = 0;
@@ -451,7 +506,12 @@
 
         const fileInput = document.getElementById('fileInput');
         const imgViewport = document.getElementById('imgViewport');
-        const mainImage = document.getElementById('mainImage');
+        const layerStack = document.getElementById('layerStack');
+
+        // Layers
+        const layerBase = document.getElementById('layerBase');
+        const layerCam = document.getElementById('layerCam');
+        const layerSeg = document.getElementById('layerSeg');
 
         fileInput.addEventListener('change', (e) => {
             const file = e.target.files[0];
@@ -487,55 +547,40 @@
 
                 if (data.error) throw new Error(data.error);
 
-                originalImgData = "data:image/png;base64," + data.original_image;
-                segmentedImgData = data.segmentation_image ? "data:image/png;base64," + data.segmentation_image : null;
+                // Set Base Image
+                layerBase.src = "data:image/png;base64," + data.original_image;
+
+                // Set Segmentation Mask (if available)
+                if (data.segmentation_image) {
+                    segmentedImgData = "data:image/png;base64," + data.segmentation_image;
+                    layerSeg.src = segmentedImgData;
+                    document.getElementById('toggleSeg').disabled = false;
+                    document.getElementById('downloadBtn').style.display = 'flex';
+                } else {
+                    segmentedImgData = null;
+                    layerSeg.src = ""; // Clear
+                    document.getElementById('toggleSeg').disabled = true;
+                    document.getElementById('toggleSeg').checked = false;
+                    document.getElementById('downloadBtn').style.display = 'none';
+                }
+
+                // Set Heatmap (if available)
+                if (data.heatmap_image) {
+                    heatmapImgData = "data:image/png;base64," + data.heatmap_image;
+                    layerCam.src = heatmapImgData;
+                    document.getElementById('toggleCam').disabled = false;
+                } else {
+                    heatmapImgData = null;
+                    layerCam.src = "";
+                    document.getElementById('toggleCam').disabled = true;
+                    document.getElementById('toggleCam').checked = false;
+                }
 
                 document.getElementById('planeResult').innerText = data.planar_class.toUpperCase();
                 document.getElementById('classResult').innerText = data.tumor_class;
 
-                const probContainer = document.getElementById('probContainer');
-                probContainer.innerHTML = '';
-
-                // Add a little color logic for probs
-                const sorted = Object.entries(data.tumor_probs).sort((a, b) => b[1] - a[1]);
-
-                for (const [cls, prob] of sorted) {
-                    const pct = (prob * 100).toFixed(1);
-                    // Highlight top prob
-                    const isTop = pct > 50;
-                    const barColor = isTop ? 'var(--success-color)' : '#cbd5e0';
-                    const textColor = isTop ? 'var(--text-main)' : 'var(--text-light)';
-                    const fontWeight = isTop ? 'bold' : 'normal';
-
-                    probContainer.innerHTML += `
-                        <div style="margin-bottom: 12px;">
-                            <div style="display:flex; justify-content:space-between; font-size:0.9rem; color: ${textColor}; font-weight: ${fontWeight}; margin-bottom: 5px;">
-                                <span>${cls}</span>
-                                <span>${pct}%</span>
-                            </div>
-                            <div class="progress-bg">
-                                <div class="progress-fill" style="width: ${pct}%; background: ${barColor}"></div>
-                            </div>
-                        </div>
-                    `;
-                }
-
-                showOriginal();
-
-                const segBtn = document.getElementById('segBtn');
-                const downloadBtn = document.getElementById('downloadBtn');
-
-                if (!segmentedImgData) {
-                    segBtn.disabled = true;
-                    segBtn.style.opacity = 0.5;
-                    segBtn.innerText = "No Seg. Mask";
-                    downloadBtn.style.display = 'none';
-                } else {
-                    segBtn.disabled = false;
-                    segBtn.style.opacity = 1;
-                    segBtn.innerText = "Segmentation";
-                    downloadBtn.style.display = 'flex';
-                }
+                renderProbabilities(data.tumor_probs);
+                updateLayers();
 
                 document.getElementById('loader').style.display = 'none';
                 document.getElementById('resultsArea').style.display = 'grid';
@@ -544,6 +589,52 @@
                 document.getElementById('loader').style.display = 'none';
                 document.getElementById('errorMsg').innerText = err.message;
                 document.getElementById('errorMsg').style.display = 'block';
+            }
+        }
+
+        function renderProbabilities(probs) {
+            const probContainer = document.getElementById('probContainer');
+            probContainer.innerHTML = '';
+            const sorted = Object.entries(probs).sort((a, b) => b[1] - a[1]);
+
+            for (const [cls, prob] of sorted) {
+                const pct = (prob * 100).toFixed(1);
+                const isTop = pct > 50;
+                const barColor = isTop ? 'var(--success-color)' : '#cbd5e0';
+                const textColor = isTop ? 'var(--text-main)' : 'var(--text-light)';
+                const fontWeight = isTop ? 'bold' : 'normal';
+
+                probContainer.innerHTML += `
+                    <div style="margin-bottom: 12px;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.9rem; color: ${textColor}; font-weight: ${fontWeight}; margin-bottom: 5px;">
+                            <span>${cls}</span>
+                            <span>${pct}%</span>
+                        </div>
+                        <div class="progress-bg">
+                            <div class="progress-fill" style="width: ${pct}%; background: ${barColor}"></div>
+                        </div>
+                    </div>
+                `;
+            }
+        }
+
+        function updateLayers() {
+            // Logic for Segmentation Layer
+            const showSeg = document.getElementById('toggleSeg').checked;
+            const opSeg = document.getElementById('opacitySeg').value;
+            if (segmentedImgData && showSeg) {
+                layerSeg.style.opacity = opSeg;
+            } else {
+                layerSeg.style.opacity = 0;
+            }
+
+            // Logic for Heatmap Layer
+            const showCam = document.getElementById('toggleCam').checked;
+            const opCam = document.getElementById('opacityCam').value;
+            if (heatmapImgData && showCam) {
+                layerCam.style.opacity = opCam;
+            } else {
+                layerCam.style.opacity = 0;
             }
         }
 
@@ -558,7 +649,7 @@
         }
 
         function updateTransform() {
-            mainImage.style.transform = `translate(${pannedX}px, ${pannedY}px) scale(${scale})`;
+            layerStack.style.transform = `translate(${pannedX}px, ${pannedY}px) scale(${scale})`;
         }
 
         function adjustZoom(delta) {
@@ -578,8 +669,7 @@
         imgViewport.addEventListener('wheel', (e) => {
             e.preventDefault();
             const delta = e.deltaY * -0.001;
-            const newScale = Math.min(Math.max(1, scale + delta), 5);
-            scale = newScale;
+            scale = Math.min(Math.max(1, scale + delta), 5);
             updateTransform();
         });
 
@@ -604,26 +694,6 @@
             pannedY = e.clientY - startY;
             updateTransform();
         });
-
-        function showOriginal() {
-            document.getElementById('mainImage').src = originalImgData;
-            toggleBtns(0);
-        }
-
-        function showSegmented() {
-            if (segmentedImgData) {
-                document.getElementById('mainImage').src = segmentedImgData;
-                toggleBtns(1);
-            }
-        }
-
-        function toggleBtns(idx) {
-            const btns = document.querySelectorAll('.toggle-btn');
-            btns.forEach((b, i) => {
-                if (i === idx) b.classList.add('active');
-                else b.classList.remove('active');
-            });
-        }
     </script>
 </body>
 

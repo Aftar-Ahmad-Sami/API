@@ -4,6 +4,7 @@ import base64
 import tempfile
 import numpy as np
 from PIL import Image
+import matplotlib.cm as cm # Added for Heatmap coloring
 
 import torch
 import torch.nn as nn
@@ -21,33 +22,28 @@ from flask import Flask, render_template, request, jsonify
 
 # ============================================================================
 
-# Configuration class for paths, constants, and device setup
 class Config:
-    # Paths to model files
     MODEL_TUMOR_CLASS = 'models/efficientnet_b0_best.pth'
     MODEL_PLANAR = 'models/plane_classifier.pth'
     
-    # Mapping of planar output to segmentation model paths
     MODEL_SEGMENTATION = {
         'axial': 'models/ax_best_model.pth',
         'coronal': 'models/co_best_model.pth',
         'sagittal': 'models/sa_best_model.pth'
     }
 
-    # Class labels for tumor and planar classification
     TUMOR_CLASSES = ['Glioma', 'Meningioma', 'No Tumor', 'Pituitary']
     PLANAR_CLASSES = ['axial', 'coronal', 'sagittal'] 
     
-    # Image sizes for classification and segmentation
     IMG_SIZE_CLS = 224
     IMG_SIZE_SEG = 512
     
-    # Device configuration (GPU if available, otherwise CPU)
     DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 
 # ============================================================================
+# MODELS
+# ============================================================================
 
-# PlaneClassifier: A model for classifying image planes (axial, coronal, sagittal)
 class PlaneClassifier(nn.Module):
     def __init__(self):
         super(PlaneClassifier, self).__init__()
@@ -62,7 +58,6 @@ class PlaneClassifier(nn.Module):
     def forward(self, x):
         return self.model(x)
 
-# Atrous Spatial Pyramid Pooling (ASPP) module for segmentation
 class ASPP(nn.Module):
     def __init__(self, in_channels, out_channels):
         super(ASPP, self).__init__()
@@ -81,7 +76,6 @@ class ASPP(nn.Module):
         x5 = F.interpolate(self.global_avg_pool(x), size=x4.size()[2:], mode='bilinear', align_corners=False)
         return self.project(torch.cat((x1, x2, x3, x4, x5), dim=1))
 
-# DeepLabHead: Decoder head for DeepLabV3+ segmentation model
 class DeepLabHead(nn.Module):
     def __init__(self, n_classes, low_level_channels=256, aspp_in_channels=2048, decoder_channels=256):
         super(DeepLabHead, self).__init__()
@@ -98,7 +92,6 @@ class DeepLabHead(nn.Module):
         x_low = self.project_low_level(x_low)
         return self.classifier(torch.cat([x_aspp, x_low], dim=1))
 
-# DeepLabV3Plus: Full segmentation model with ResNet backbone and DeepLabHead
 class DeepLabV3Plus(nn.Module):
     def __init__(self, n_channels=1, n_classes=2):
         super(DeepLabV3Plus, self).__init__()
@@ -122,13 +115,13 @@ class DeepLabV3Plus(nn.Module):
         return F.interpolate(x, size=input_shape, mode='bilinear', align_corners=False)
 
 # ============================================================================
+# APP SETUP
+# ============================================================================
 
-# Flask app initialization and configuration
 app = Flask(__name__)
 app.secret_key = 'bme-mri-project-secret'
 app.config['MAX_CONTENT_LENGTH'] = 16 * 1024 * 1024
 
-# Global registry for loaded models
 models_registry = {
     'classifier': None,
     'planar': None,
@@ -137,11 +130,11 @@ models_registry = {
     'seg_sagittal': None
 }
 
-# Function to load models into memory
 def load_models():
     print("⏳ Loading Models into Memory...")
     
     if os.path.exists(Config.MODEL_TUMOR_CLASS):
+        # Using timm EfficientNet
         m = timm.create_model('efficientnet_b0', pretrained=False, num_classes=4)
         ckpt = torch.load(Config.MODEL_TUMOR_CLASS, map_location=Config.DEVICE)
         if 'model_state_dict' in ckpt: ckpt = ckpt['model_state_dict']
@@ -173,7 +166,7 @@ def load_models():
 with app.app_context():
     load_models()
 
-# Preprocessing transforms for different tasks
+# Transforms
 trans_tumor = transforms.Compose([
     transforms.Resize((Config.IMG_SIZE_CLS, Config.IMG_SIZE_CLS)),
     transforms.ToTensor(),
@@ -192,7 +185,10 @@ trans_gray_seg = transforms.Compose([
     transforms.Normalize(mean=[0.5], std=[0.5])
 ])
 
-# Helper function to normalize and convert 2D array to PNG bytes
+# ============================================================================
+# HELPERS
+# ============================================================================
+
 def normalize_and_convert_to_png(data):
     data = data.astype(float)
     data = (np.maximum(data, 0) / data.max()) * 255.0
@@ -203,7 +199,6 @@ def normalize_and_convert_to_png(data):
     img.save(buff, format="PNG")
     return buff.getvalue()
 
-# Helper function to process DICOM files
 def convert_dicom_to_png_bytes(dicom_bytes):
     try:
         ds = pydicom.dcmread(io.BytesIO(dicom_bytes))
@@ -211,130 +206,204 @@ def convert_dicom_to_png_bytes(dicom_bytes):
     except Exception as e:
         raise ValueError(f"Failed to process DICOM: {str(e)}")
 
-# Helper function to process MATLAB .mat files
 def convert_mat_to_png_bytes(mat_bytes):
     try:
         mat = scipy.io.loadmat(io.BytesIO(mat_bytes))
         image_data = None
-        
         if 'cjdata' in mat:
             cjdata = mat['cjdata']
             if 'image' in cjdata.dtype.names:
                 image_data = cjdata['image'][0, 0]
-        
         if image_data is None:
             for key in ['image', 'img', 'data', 'IM', 'im']:
                 if key in mat:
                     image_data = mat[key]
                     break
-        
         if image_data is not None:
             return normalize_and_convert_to_png(image_data)
-            
     except Exception:
         pass 
-
+    
+    # H5PY Fallback
     tmp_path = None
     try:
         with tempfile.NamedTemporaryFile(delete=False, suffix='.mat') as tmp:
             tmp.write(mat_bytes)
             tmp_path = tmp.name
-        
         with h5py.File(tmp_path, 'r') as f:
             image_data = None
-            
-            if 'cjdata' in f:
-                if 'image' in f['cjdata']:
-                    data = f['cjdata']['image'][()]
-                    image_data = np.array(data).T
-            
+            if 'cjdata' in f and 'image' in f['cjdata']:
+                data = f['cjdata']['image'][()]
+                image_data = np.array(data).T
             if image_data is None:
                 for key in ['image', 'img', 'data']:
                     if key in f:
                         image_data = np.array(f[key][()]).T
                         break
-                        
             if image_data is not None:
                 return normalize_and_convert_to_png(image_data)
-
     except Exception as e:
         raise ValueError(f"Failed to process v7.3 MAT file: {str(e)}")
-    
     finally:
         if tmp_path and os.path.exists(tmp_path):
-            try:
-                os.remove(tmp_path)
-            except Exception:
-                pass 
-
-    raise ValueError("Could not extract image data from .mat file (tried Scipy and HDF5 methods)")
+            try: os.remove(tmp_path)
+            except: pass 
+    raise ValueError("Could not extract image data from .mat file")
 
 # ============================================================================
+# ANALYTICS LOGIC (Grad-CAM & Segmentation)
+# ============================================================================
 
-# Function to process an image and perform classification and segmentation
+def generate_heatmap(model, input_tensor, target_class_idx):
+    """
+    Generates Grad-CAM heatmap for EfficientNet B0
+    """
+    gradients = []
+    activations = []
+
+    def backward_hook(module, grad_input, grad_output):
+        gradients.append(grad_output[0])
+
+    def forward_hook(module, input, output):
+        activations.append(output)
+
+    # Hook into the last convolutional layer of EfficientNet B0 (timm)
+    # usually 'conv_head' or 'blocks[-1]'
+    target_layer = model.conv_head
+    
+    # Register hooks
+    handle_f = target_layer.register_forward_hook(forward_hook)
+    handle_b = target_layer.register_full_backward_hook(backward_hook)
+
+    # Forward
+    model.zero_grad()
+    output = model(input_tensor)
+    
+    # Backward
+    score = output[:, target_class_idx]
+    score.backward()
+
+    # Clean hooks
+    handle_f.remove()
+    handle_b.remove()
+
+    if not gradients or not activations:
+        return None
+
+    # Grad-CAM calculation
+    grads = gradients[0].cpu().data.numpy()[0] # (Channels, H, W)
+    fmaps = activations[0].cpu().data.numpy()[0] # (Channels, H, W)
+    
+    weights = np.mean(grads, axis=(1, 2)) # Global Average Pooling on Gradients
+    cam = np.zeros(fmaps.shape[1:], dtype=np.float32)
+
+    for i, w in enumerate(weights):
+        cam += w * fmaps[i, :, :]
+
+    cam = np.maximum(cam, 0) # ReLU
+    
+    # Normalize
+    if np.max(cam) > 0:
+        cam = cam / np.max(cam)
+    else:
+        cam = cam # All zeros
+
+    return cam
+
 def process_image(image_bytes, rotation_angle=0):
     img_pil = Image.open(io.BytesIO(image_bytes)).convert('RGB')
-    
     if rotation_angle != 0:
         img_pil = img_pil.rotate(rotation_angle, expand=True)
-    
     img_gray = img_pil.convert('L')
     
     results = {}
     
+    # 1. Classification
+    detected_class_idx = 2 # Default No Tumor
+    
     if models_registry['classifier']:
+        # IMPORTANT: Enable grad for Grad-CAM
         input_tensor = trans_tumor(img_pil).unsqueeze(0).to(Config.DEVICE)
-        with torch.no_grad():
+        
+        # We need gradients for Grad-CAM, even in inference
+        with torch.set_grad_enabled(True):
             outputs = models_registry['classifier'](input_tensor)
             probs = torch.softmax(outputs, dim=1)
             conf, pred_idx = torch.max(probs, 1)
+            detected_class_idx = pred_idx.item()
             
-            all_probs = probs[0].cpu().numpy()
-            results['tumor_class'] = Config.TUMOR_CLASSES[pred_idx.item()]
+            all_probs = probs[0].detach().cpu().numpy()
+            results['tumor_class'] = Config.TUMOR_CLASSES[detected_class_idx]
             results['tumor_conf'] = float(conf.item())
-            results['tumor_probs'] = {
-                Config.TUMOR_CLASSES[i]: float(all_probs[i]) 
-                for i in range(4)
-            }
+            results['tumor_probs'] = {Config.TUMOR_CLASSES[i]: float(all_probs[i]) for i in range(4)}
+
+            # --- OPTION 2: GRAD-CAM ---
+            if results['tumor_class'] != 'No Tumor':
+                cam = generate_heatmap(models_registry['classifier'], input_tensor, detected_class_idx)
+                if cam is not None:
+                    # Resize Heatmap to original image size
+                    cam_img = Image.fromarray(np.uint8(cam * 255), 'L')
+                    cam_img = cam_img.resize(img_pil.size, Image.BILINEAR)
+                    cam_arr = np.array(cam_img) / 255.0
+                    
+                    # Apply Colormap (Jet)
+                    # cm.jet returns RGBA 0-1 float
+                    heatmap_colored = cm.jet(cam_arr) 
+                    heatmap_colored = np.uint8(heatmap_colored * 255)
+                    
+                    # Create RGBA Image
+                    # Set Alpha channel based on intensity (so low activation is transparent)
+                    heatmap_pil = Image.fromarray(heatmap_colored)
+                    r, g, b, a = heatmap_pil.split()
+                    
+                    # Make regions with 0 activation transparent
+                    # Use the cam_img itself as a mask for alpha
+                    final_heatmap = Image.merge('RGBA', (r, g, b, cam_img))
+                    
+                    buff_cam = io.BytesIO()
+                    final_heatmap.save(buff_cam, format="PNG")
+                    results['heatmap_image'] = base64.b64encode(buff_cam.getvalue()).decode('utf-8')
     
+    # 2. Planar Detection
     detected_plane = 'axial'
     if models_registry['planar']:
-        input_tensor = trans_gray_planar(img_gray).unsqueeze(0).to(Config.DEVICE)
         with torch.no_grad():
+            input_tensor = trans_gray_planar(img_gray).unsqueeze(0).to(Config.DEVICE)
             outputs = models_registry['planar'](input_tensor)
             _, pred_idx = torch.max(outputs, 1)
             detected_plane = Config.PLANAR_CLASSES[pred_idx.item()]
             results['planar_class'] = detected_plane
     
+    # 3. Segmentation (Option 1 Impl)
     seg_key = f'seg_{detected_plane}'
-    mask_b64 = None
     
     if results['tumor_class'] != 'No Tumor' and models_registry.get(seg_key):
-            input_tensor = trans_gray_seg(img_gray).unsqueeze(0).to(Config.DEVICE)
             with torch.no_grad():
+                input_tensor = trans_gray_seg(img_gray).unsqueeze(0).to(Config.DEVICE)
                 output = models_registry[seg_key](input_tensor)
                 probs = torch.softmax(output, dim=1)
                 pred_mask = probs[0, 1, :, :].cpu().numpy()
                 
+                # Resize mask to original
                 binary_mask = (pred_mask > 0.5).astype(np.uint8) * 255
-                
                 mask_img = Image.fromarray(binary_mask, mode='L')
                 mask_img = mask_img.resize(img_pil.size, Image.BILINEAR)
                 
-                overlay = Image.new("RGBA", img_pil.size, (255, 0, 0, 0))
-                mask_arr = np.array(mask_img)
-                overlay_arr = np.array(overlay)
-                overlay_arr[mask_arr > 127] = [255, 50, 50, 100] 
+                # --- OPTION 1: RETURN TRANSPARENT MASK LAYER ---
+                # Create a Solid Red Image
+                red = Image.new("L", img_pil.size, 255)
+                green = Image.new("L", img_pil.size, 50)
+                blue = Image.new("L", img_pil.size, 50)
                 
-                final_overlay = Image.fromarray(overlay_arr, 'RGBA')
-                combined = Image.alpha_composite(img_pil.convert('RGBA'), final_overlay)
+                # Use the binary mask as the Alpha channel
+                # Where mask is white (tumor), image is Red. Where mask is black, image is transparent.
+                overlay = Image.merge("RGBA", (red, green, blue, mask_img))
                 
                 buff = io.BytesIO()
-                combined.save(buff, format="PNG")
-                mask_b64 = base64.b64encode(buff.getvalue()).decode('utf-8')
+                overlay.save(buff, format="PNG")
+                results['segmentation_image'] = base64.b64encode(buff.getvalue()).decode('utf-8')
             
-    results['segmentation_image'] = mask_b64
-    
+    # Return Original
     buff_orig = io.BytesIO()
     img_pil.save(buff_orig, format="PNG")
     results['original_image'] = base64.b64encode(buff_orig.getvalue()).decode('utf-8')
@@ -342,13 +411,13 @@ def process_image(image_bytes, rotation_angle=0):
     return results
 
 # ============================================================================
+# ROUTES
+# ============================================================================
 
-# Route for the home page
 @app.route('/')
 def index():
     return render_template('index.html')
 
-# Route for handling predictions
 @app.route('/predict', methods=['POST'])
 def predict():
     if 'file' not in request.files:
@@ -375,6 +444,5 @@ def predict():
         print(f"Error: {e}")
         return jsonify({'error': str(e)}), 500
 
-# Entry point for running the Flask app
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
