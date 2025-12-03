@@ -1,4 +1,4 @@
-# NeuroVision AI — Brain Tumor Analysis API
+# NeuroVision AI — Brain Tumor Analysis
 
 NeuroVision AI is a lightweight Flask web application for brain MRI analysis. It provides tumor classification, scan-plane detection, segmentation overlays and Grad-CAM explainability (heatmap) for supported images (PNG/JPG/JPEG, DICOM `.dcm`, and MATLAB `.mat` formats). The app is intended for research and prototyping — not for clinical use.
 
